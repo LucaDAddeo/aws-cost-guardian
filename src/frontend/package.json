@@ -1,0 +1,39 @@
+{
+  "name": "@aws-cost-guardian/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "React SPA frontend for AWS Cost Guardian",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/ --ext .ts,.tsx"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.26.1",
+    "recharts": "2.12.7",
+    "@aws-amplify/auth": "6.4.0",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "5.5.4",
+    "@types/react": "18.3.4",
+    "@types/react-dom": "18.3.0",
+    "@vitejs/plugin-react": "4.3.1",
+    "vite": "5.4.2",
+    "vitest": "2.0.5",
+    "fast-check": "3.21.0",
+    "@testing-library/react": "16.0.0",
+    "@testing-library/jest-dom": "6.4.8",
+    "jsdom": "24.1.1",
+    "eslint": "8.57.0",
+    "@typescript-eslint/eslint-plugin": "7.18.0",
+    "@typescript-eslint/parser": "7.18.0",
+    "eslint-plugin-react-hooks": "4.6.2"
+  }
+}

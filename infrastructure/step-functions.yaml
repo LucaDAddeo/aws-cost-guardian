@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Cost Guardian - Step Functions State Machine
+  Defines the multi-region resource scanning orchestration with fan-out/fan-in pattern.
+
+Parameters:
+  RegionScannerFunctionArn:
+    Type: String
+    Description: ARN of the RegionScanner Lambda function
+    Default: 'arn:aws:lambda:us-east-1:123456789012:function:RegionScanner'
+
+  ResultAggregatorFunctionArn:
+    Type: String
+    Description: ARN of the ResultAggregator Lambda function
+    Default: 'arn:aws:lambda:us-east-1:123456789012:function:ResultAggregator'
+
+  ResultPersisterFunctionArn:
+    Type: String
+    Description: ARN of the ResultPersister Lambda function
+    Default: 'arn:aws:lambda:us-east-1:123456789012:function:ResultPersister'
+
+  StepFunctionsExecutionRoleArn:
+    Type: String
+    Description: ARN of the Step Functions execution role
+    Default: 'arn:aws:iam::123456789012:role/StepFunctionsRole'
+
+Resources:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Multi-Region Resource Scanner State Machine
+  # ─────────────────────────────────────────────────────────────────────────────
+  ResourceScannerStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub '${AWS::StackName}-ResourceScanner'
+      RoleArn: !Ref StepFunctionsExecutionRoleArn
+      StateMachineType: STANDARD
+      Tags:
+        - Key: Application
+          Value: AWSCostGuardian
+        - Key: Component
+          Value: Scanner
+      DefinitionString: !Sub |
+        {
+          "Comment": "Multi-region resource scanner with fan-out/fan-in. Scans all enabled AWS regions in parallel, aggregates results, and persists to DynamoDB.",
+          "StartAt": "GetEnabledRegions",
+          "TimeoutSeconds": 600,
+          "States": {
+            "GetEnabledRegions": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:ec2:describeRegions",
+              "Parameters": {
+                "AllRegions": false
+              },
+              "ResultSelector": {
+                "regions.$": "$.Regions[*].RegionName"
+              },
+              "ResultPath": "$.regionData",
+              "Next": "PrepareScanInput"
+            },
+            "PrepareScanInput": {
+              "Type": "Pass",
+              "Parameters": {
+                "scanId.$": "$.scanId",
+                "regions.$": "$.regionData.regions"
+              },
+              "Next": "ScanAllRegions"
+            },
+            "ScanAllRegions": {
+              "Type": "Map",
+              "ItemsPath": "$.regions",
+              "MaxConcurrency": 10,
+              "Parameters": {
+                "region.$": "$$.Map.Item.Value",
+                "scanId.$": "$.scanId"
+              },
+              "Iterator": {
+                "StartAt": "ScanRegion",
+                "States": {
+                  "ScanRegion": {
+                    "Type": "Task",
+                    "Resource": "${RegionScannerFunctionArn}",
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "Next": "HandleScanError",
+                        "ResultPath": "$.errorInfo"
+                      }
+                    ],
+                    "End": true
+                  },
+                  "HandleScanError": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "region.$": "$.region",
+                      "scanId.$": "$.scanId",
+                      "status": "error",
+                      "resources": [],
+                      "errors": [
+                        {
+                          "resourceType": "all",
+                          "errorCode": "REGION_SCAN_FAILED",
+                          "message.$": "$.errorInfo.Cause"
+                        }
+                      ],
+                      "scannedAt.$": "$$.State.EnteredTime"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "ResultPath": "$.scanResults",
+              "Next": "AggregateResults"
+            },
+            "AggregateResults": {
+              "Type": "Task",
+              "Resource": "${ResultAggregatorFunctionArn}",
+              "Parameters": {
+                "scanId.$": "$.scanId",
+                "regionResults.$": "$.scanResults"
+              },
+              "ResultPath": "$.aggregatedResults",
+              "Next": "PersistResults"
+            },
+            "PersistResults": {
+              "Type": "Task",
+              "Resource": "${ResultPersisterFunctionArn}",
+              "Parameters": {
+                "scanId.$": "$.scanId",
+                "aggregatedResults.$": "$.aggregatedResults"
+              },
+              "End": true
+            }
+          }
+        }
+
+Outputs:
+  StateMachineArn:
+    Description: ARN of the Resource Scanner state machine
+    Value: !Ref ResourceScannerStateMachine
+    Export:
+      Name: !Sub '${AWS::StackName}-StateMachineArn'
+
+  StateMachineName:
+    Description: Name of the Resource Scanner state machine
+    Value: !GetAtt ResourceScannerStateMachine.Name
+    Export:
+      Name: !Sub '${AWS::StackName}-StateMachineName'

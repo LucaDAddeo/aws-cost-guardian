@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Cost Guardian - DynamoDB Tables
+  Defines ScanResults, ActionHistory, and ApprovalLog tables with TTL and GSI.
+
+Resources:
+  # Stores scan results per region and resource type.
+  # PK: scanId, SK: regionResourceType (e.g., "us-east-1#ec2-instance")
+  # GSI LatestScanIndex allows querying the most recent scan.
+  ScanResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-ScanResults'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: scanId
+          AttributeType: S
+        - AttributeName: regionResourceType
+          AttributeType: S
+        - AttributeName: latest
+          AttributeType: S
+        - AttributeName: scannedAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: scanId
+          KeyType: HASH
+        - AttributeName: regionResourceType
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: LatestScanIndex
+          KeySchema:
+            - AttributeName: latest
+              KeyType: HASH
+            - AttributeName: scannedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Application
+          Value: AWSCostGuardian
+        - Key: Component
+          Value: ScanResults
+
+  # Stores action history per user with timestamps.
+  # PK: userId, SK: actionTimestamp
+  ActionHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-ActionHistory'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: actionTimestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: actionTimestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Application
+          Value: AWSCostGuardian
+        - Key: Component
+          Value: ActionHistory
+
+  # Stores approval decisions for destructive operations.
+  # PK: approvalId
+  ApprovalLogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-ApprovalLog'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: approvalId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: approvalId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Application
+          Value: AWSCostGuardian
+        - Key: Component
+          Value: ApprovalLog
+
+Outputs:
+  ScanResultsTableName:
+    Description: Name of the ScanResults DynamoDB table
+    Value: !Ref ScanResultsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-ScanResultsTableName'
+
+  ScanResultsTableArn:
+    Description: ARN of the ScanResults DynamoDB table
+    Value: !GetAtt ScanResultsTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ScanResultsTableArn'
+
+  ActionHistoryTableName:
+    Description: Name of the ActionHistory DynamoDB table
+    Value: !Ref ActionHistoryTable
+    Export:
+      Name: !Sub '${AWS::StackName}-ActionHistoryTableName'
+
+  ActionHistoryTableArn:
+    Description: ARN of the ActionHistory DynamoDB table
+    Value: !GetAtt ActionHistoryTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ActionHistoryTableArn'
+
+  ApprovalLogTableName:
+    Description: Name of the ApprovalLog DynamoDB table
+    Value: !Ref ApprovalLogTable
+    Export:
+      Name: !Sub '${AWS::StackName}-ApprovalLogTableName'
+
+  ApprovalLogTableArn:
+    Description: ARN of the ApprovalLog DynamoDB table
+    Value: !GetAtt ApprovalLogTable.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ApprovalLogTableArn'

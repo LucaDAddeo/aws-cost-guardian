@@ -1,0 +1,589 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Cost Guardian - Lambda Functions and IAM Roles
+  Defines all Lambda functions with scoped IAM execution roles (least privilege).
+
+Parameters:
+  ScanResultsTableArn:
+    Type: String
+    Description: ARN of the ScanResults DynamoDB table
+    Default: 'arn:aws:dynamodb:us-east-1:123456789012:table/ScanResults'
+
+  ActionHistoryTableArn:
+    Type: String
+    Description: ARN of the ActionHistory DynamoDB table
+    Default: 'arn:aws:dynamodb:us-east-1:123456789012:table/ActionHistory'
+
+  ApprovalLogTableArn:
+    Type: String
+    Description: ARN of the ApprovalLog DynamoDB table
+    Default: 'arn:aws:dynamodb:us-east-1:123456789012:table/ApprovalLog'
+
+  WebSocketApiId:
+    Type: String
+    Description: WebSocket API ID for manage connections
+    Default: 'placeholder'
+
+  StateMachineArn:
+    Type: String
+    Description: ARN of the Step Functions state machine
+    Default: 'arn:aws:states:us-east-1:123456789012:stateMachine:placeholder'
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    MemorySize: 256
+    Timeout: 30
+    Tags:
+      Application: AWSCostGuardian
+
+Resources:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Scanner Lambda Functions
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # ScanInitiator - Starts Step Functions execution
+  ScanInitiatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ScanInitiator'
+      Handler: scanner/scanInitiator.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt ScanInitiatorRole.Arn
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+
+  ScanInitiatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ScanInitiatorRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: StartStepFunctionsExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref StateMachineArn
+
+  # RegionScanner - Scans a single region for all resource types
+  RegionScannerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-RegionScanner'
+      Handler: scanner/regionScanner.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt RegionScannerRole.Arn
+      Timeout: 30
+
+  RegionScannerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-RegionScannerRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ResourceDiscoveryReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeNatGateways
+                  - ec2:DescribeImages
+                  - ec2:DescribeSnapshots
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - s3:ListBuckets
+                  - s3:GetBucketLocation
+                  - lambda:ListFunctions
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - ecs:ListClusters
+                  - ecs:ListTasks
+                  - ecs:DescribeClusters
+                  - ecs:DescribeTasks
+                Resource: '*'
+
+  # ResultAggregator - Merges region scan results
+  ResultAggregatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ResultAggregator'
+      Handler: scanner/resultAggregator.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt ResultAggregatorRole.Arn
+
+  ResultAggregatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ResultAggregatorRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # ResultPersister - Writes scan results to DynamoDB
+  ResultPersisterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ResultPersister'
+      Handler: scanner/resultPersister.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt ResultPersisterRole.Arn
+      Environment:
+        Variables:
+          SCAN_RESULTS_TABLE: !Sub '${AWS::StackName}-ScanResults'
+
+  ResultPersisterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ResultPersisterRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBWriteScanResults
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:BatchWriteItem
+                Resource:
+                  - !Ref ScanResultsTableArn
+                  - !Sub '${ScanResultsTableArn}/index/*'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # API Lambda Functions
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # CostRetriever - Queries AWS Cost Explorer API
+  CostRetrieverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-CostRetriever'
+      Handler: costs/costRetriever.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt CostRetrieverRole.Arn
+
+  CostRetrieverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-CostRetrieverRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CostExplorerReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                  - ce:GetCostForecast
+                Resource: '*'
+
+  # ScanResults - Retrieves scan results from DynamoDB
+  ScanResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-ScanResults'
+      Handler: scanner/scanResults.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt ScanResultsReaderRole.Arn
+      Environment:
+        Variables:
+          SCAN_RESULTS_TABLE: !Sub '${AWS::StackName}-ScanResults'
+
+  ScanResultsReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-ScanResultsReaderRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBReadScanResults
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                Resource:
+                  - !Ref ScanResultsTableArn
+                  - !Sub '${ScanResultsTableArn}/index/*'
+
+  # HistoryRetriever - Retrieves action history from DynamoDB
+  HistoryRetrieverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-HistoryRetriever'
+      Handler: history/historyRetriever.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt HistoryRetrieverRole.Arn
+      Environment:
+        Variables:
+          ACTION_HISTORY_TABLE: !Sub '${AWS::StackName}-ActionHistory'
+
+  HistoryRetrieverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-HistoryRetrieverRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBReadActionHistory
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Ref ActionHistoryTableArn
+                  - !Sub '${ActionHistoryTableArn}/index/*'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Agent Lambda Function (Python runtime)
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # AgentInvoker - Invokes Strands SDK agent for NL queries
+  AgentInvokerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-AgentInvoker'
+      Runtime: python3.12
+      Handler: agent/handler.lambda_handler
+      CodeUri: ../src/agent/
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt AgentInvokerRole.Arn
+      Environment:
+        Variables:
+          SCAN_RESULTS_TABLE: !Sub '${AWS::StackName}-ScanResults'
+          ACTION_HISTORY_TABLE: !Sub '${AWS::StackName}-ActionHistory'
+          APPROVAL_LOG_TABLE: !Sub '${AWS::StackName}-ApprovalLog'
+          WEBSOCKET_API_ENDPOINT: !Sub 'https://${WebSocketApiId}.execute-api.${AWS::Region}.amazonaws.com/prod'
+          STATE_MACHINE_ARN: !Ref StateMachineArn
+
+  AgentInvokerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-AgentInvokerRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: BedrockInvokeModel
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: 'arn:aws:bedrock:*:123456789012:inference-profile/*'
+        - PolicyName: DynamoDBFullAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Ref ScanResultsTableArn
+                  - !Sub '${ScanResultsTableArn}/index/*'
+                  - !Ref ActionHistoryTableArn
+                  - !Sub '${ActionHistoryTableArn}/index/*'
+                  - !Ref ApprovalLogTableArn
+        - PolicyName: StepFunctionsExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                Resource: !Ref StateMachineArn
+        - PolicyName: WebSocketManageConnections
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:123456789012:${WebSocketApiId}/prod/POST/@connections/*'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WebSocket Lambda Functions
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # WebSocketConnect - Validates JWT and stores connection
+  WebSocketConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-WebSocketConnect'
+      Handler: websocket/connect.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt WebSocketConnectRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Sub '${AWS::StackName}-WebSocketConnections'
+
+  WebSocketConnectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-WebSocketConnectRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WebSocketConnectionManagement
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:123456789012:table/${AWS::StackName}-WebSocketConnections'
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:123456789012:${WebSocketApiId}/prod/POST/@connections/*'
+
+  # WebSocketDisconnect - Removes connection record
+  WebSocketDisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-WebSocketDisconnect'
+      Handler: websocket/disconnect.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt WebSocketDisconnectRole.Arn
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Sub '${AWS::StackName}-WebSocketConnections'
+
+  WebSocketDisconnectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-WebSocketDisconnectRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: WebSocketConnectionCleanup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:123456789012:table/${AWS::StackName}-WebSocketConnections'
+
+  # WebSocketApprovalResponse - Processes approval decisions
+  WebSocketApprovalResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-WebSocketApprovalResponse'
+      Handler: websocket/approvalResponse.handler
+      CodeUri: ../src/lambdas/
+      Role: !GetAtt WebSocketApprovalResponseRole.Arn
+      Environment:
+        Variables:
+          APPROVAL_LOG_TABLE: !Sub '${AWS::StackName}-ApprovalLog'
+          ACTION_HISTORY_TABLE: !Sub '${AWS::StackName}-ActionHistory'
+
+  WebSocketApprovalResponseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-WebSocketApprovalResponseRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApprovalProcessing
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                Resource:
+                  - !Ref ApprovalLogTableArn
+                  - !Ref ActionHistoryTableArn
+              - Effect: Allow
+                Action:
+                  - execute-api:ManageConnections
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:123456789012:${WebSocketApiId}/prod/POST/@connections/*'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Step Functions Execution Role
+  # ─────────────────────────────────────────────────────────────────────────────
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-StepFunctionsRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeScannerLambdas
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt RegionScannerFunction.Arn
+                  - !GetAtt ResultAggregatorFunction.Arn
+                  - !GetAtt ResultPersisterFunction.Arn
+                  - !GetAtt ScanInitiatorFunction.Arn
+
+Outputs:
+  ScanInitiatorFunctionArn:
+    Description: ARN of the ScanInitiator Lambda function
+    Value: !GetAtt ScanInitiatorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ScanInitiatorFunctionArn'
+
+  RegionScannerFunctionArn:
+    Description: ARN of the RegionScanner Lambda function
+    Value: !GetAtt RegionScannerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RegionScannerFunctionArn'
+
+  ResultAggregatorFunctionArn:
+    Description: ARN of the ResultAggregator Lambda function
+    Value: !GetAtt ResultAggregatorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ResultAggregatorFunctionArn'
+
+  ResultPersisterFunctionArn:
+    Description: ARN of the ResultPersister Lambda function
+    Value: !GetAtt ResultPersisterFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ResultPersisterFunctionArn'
+
+  CostRetrieverFunctionArn:
+    Description: ARN of the CostRetriever Lambda function
+    Value: !GetAtt CostRetrieverFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-CostRetrieverFunctionArn'
+
+  ScanResultsFunctionArn:
+    Description: ARN of the ScanResults Lambda function
+    Value: !GetAtt ScanResultsFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ScanResultsFunctionArn'
+
+  HistoryRetrieverFunctionArn:
+    Description: ARN of the HistoryRetriever Lambda function
+    Value: !GetAtt HistoryRetrieverFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-HistoryRetrieverFunctionArn'
+
+  AgentInvokerFunctionArn:
+    Description: ARN of the AgentInvoker Lambda function
+    Value: !GetAtt AgentInvokerFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-AgentInvokerFunctionArn'
+
+  StepFunctionsExecutionRoleArn:
+    Description: ARN of the Step Functions execution role
+    Value: !GetAtt StepFunctionsExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-StepFunctionsRoleArn'

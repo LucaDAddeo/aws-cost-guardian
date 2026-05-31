@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  AWS Cost Guardian - API Gateway
+  Defines REST API with Cognito Authorizer and WebSocket API for real-time communication.
+
+Parameters:
+  UserPoolArn:
+    Type: String
+    Description: ARN of the Cognito User Pool for authorization
+    Default: 'arn:aws:cognito-idp:us-east-1:123456789012:userpool/placeholder'
+
+Resources:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REST API with Cognito Authorizer
+  # ─────────────────────────────────────────────────────────────────────────────
+  CostGuardianRestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-RestApi'
+      StageName: prod
+      Description: AWS Cost Guardian REST API
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Ref UserPoolArn
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+      EndpointConfiguration:
+        Type: REGIONAL
+      Tags:
+        Application: AWSCostGuardian
+        Component: RestApi
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # REST API Resources and Methods
+  # ─────────────────────────────────────────────────────────────────────────────
+
+  # POST /scans - Trigger multi-region scan
+  ScansResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !GetAtt CostGuardianRestApi.RootResourceId
+      PathPart: scans
+
+  PostScansMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref ScansResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-ScanInitiator/invocations'
+
+  # GET /scans/latest - Get most recent scan results
+  ScansLatestResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !Ref ScansResource
+      PathPart: latest
+
+  GetScansLatestMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref ScansLatestResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-ScanResults/invocations'
+
+  # GET /scans/{scanId} - Get specific scan by ID
+  ScanIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !Ref ScansResource
+      PathPart: '{scanId}'
+
+  GetScanByIdMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref ScanIdResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-ScanResults/invocations'
+
+  # GET /costs - Get cost data with date range
+  CostsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !GetAtt CostGuardianRestApi.RootResourceId
+      PathPart: costs
+
+  GetCostsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref CostsResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-CostRetriever/invocations'
+
+  # GET /costs/summary - Get cost summary
+  CostsSummaryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !Ref CostsResource
+      PathPart: summary
+
+  GetCostsSummaryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref CostsSummaryResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-CostRetriever/invocations'
+
+  # POST /agent/query - Submit NL query to agent
+  AgentResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !GetAtt CostGuardianRestApi.RootResourceId
+      PathPart: agent
+
+  AgentQueryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !Ref AgentResource
+      PathPart: query
+
+  PostAgentQueryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref AgentQueryResource
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-AgentInvoker/invocations'
+
+  # GET /history - Get action history
+  HistoryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ParentId: !GetAtt CostGuardianRestApi.RootResourceId
+      PathPart: history
+
+  GetHistoryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref CostGuardianRestApi
+      ResourceId: !Ref HistoryResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizerResource
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-HistoryRetriever/invocations'
+
+  # Cognito Authorizer resource
+  CognitoAuthorizerResource:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoAuthorizer
+      Type: COGNITO_USER_POOLS
+      RestApiId: !Ref CostGuardianRestApi
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !Ref UserPoolArn
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WebSocket API for real-time communication
+  # ─────────────────────────────────────────────────────────────────────────────
+  CostGuardianWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-WebSocketApi'
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: '$request.body.action'
+      Tags:
+        Application: AWSCostGuardian
+        Component: WebSocketApi
+
+  # WebSocket Stage
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      StageName: prod
+      AutoDeploy: true
+
+  # $connect route - Authenticate via Cognito token in query string
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${ConnectIntegration}'
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-WebSocketConnect/invocations'
+
+  # $disconnect route - Clean up connection record
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${DisconnectIntegration}'
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-WebSocketDisconnect/invocations'
+
+  # agent-response route - Stream agent responses to client
+  AgentResponseRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      RouteKey: agent-response
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${AgentResponseIntegration}'
+
+  AgentResponseIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-AgentInvoker/invocations'
+
+  # approval-request route - Push approval prompt to client
+  ApprovalRequestRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      RouteKey: approval-request
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${ApprovalRequestIntegration}'
+
+  ApprovalRequestIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-AgentInvoker/invocations'
+
+  # approval-response route - Receive user approval/rejection
+  ApprovalResponseRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      RouteKey: approval-response
+      AuthorizationType: NONE
+      Target: !Sub 'integrations/${ApprovalResponseIntegration}'
+
+  ApprovalResponseIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref CostGuardianWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:123456789012:function:${AWS::StackName}-WebSocketApprovalResponse/invocations'
+
+Outputs:
+  RestApiId:
+    Description: REST API ID
+    Value: !Ref CostGuardianRestApi
+    Export:
+      Name: !Sub '${AWS::StackName}-RestApiId'
+
+  RestApiEndpoint:
+    Description: REST API endpoint URL
+    Value: !Sub 'https://${CostGuardianRestApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-RestApiEndpoint'
+
+  WebSocketApiId:
+    Description: WebSocket API ID
+    Value: !Ref CostGuardianWebSocketApi
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSocketApiId'
+
+  WebSocketEndpoint:
+    Description: WebSocket API endpoint URL
+    Value: !Sub 'wss://${CostGuardianWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSocketEndpoint'
